@@ -1,0 +1,1077 @@
+import std_web
+
+capsule RaichoCLeakScout
+int Main()
+{
+    Input()
+    ToInt(Input)
+    int fileCount = ToInt
+    for(fileIndex, 0, fileCount)
+    {
+        Input()
+        string path = Input
+        Input()
+        ToInt(Input)
+        int lineCount = ToInt
+        AnalyzeFile(path, lineCount)
+    }
+    return 0
+}
+
+int IsAllocator(string name)
+{
+    if(name == "malloc" || name == "calloc" || name == "realloc" || name == "strdup" || name == "strndup" || name == "aligned_alloc" || name == "reallocarray")
+    {
+        return 1
+    }
+    return 0
+}
+
+int CStatementEnd(array<string> tokens, int start, int tokenCount)
+{
+    if(start >= tokenCount)
+    {
+        return tokenCount
+    }
+    if(tokens[start] == "{")
+    {
+        int blockDepth = 0
+        for(blockScan, start, tokenCount)
+        {
+            if(tokens[blockScan] == "{")
+            {
+                blockDepth = blockDepth + 1
+            }
+            else if(tokens[blockScan] == "}")
+            {
+                blockDepth = blockDepth - 1
+                if(blockDepth == 0)
+                {
+                    return blockScan + 1
+                }
+            }
+        }
+        return tokenCount
+    }
+
+    int parentheses = 0
+    int brackets = 0
+    int braces = 0
+    for(statementScan, start, tokenCount)
+    {
+        if(tokens[statementScan] == "(")
+        {
+            parentheses = parentheses + 1
+        }
+        else if(tokens[statementScan] == ")")
+        {
+            if(parentheses > 0)
+            {
+                parentheses = parentheses - 1
+            }
+        }
+        else if(tokens[statementScan] == "[")
+        {
+            brackets = brackets + 1
+        }
+        else if(tokens[statementScan] == "]")
+        {
+            if(brackets > 0)
+            {
+                brackets = brackets - 1
+            }
+        }
+        else if(tokens[statementScan] == "{")
+        {
+            braces = braces + 1
+        }
+        else if(tokens[statementScan] == "}")
+        {
+            if(braces > 0)
+            {
+                braces = braces - 1
+                if(braces == 0 && parentheses == 0 && brackets == 0)
+                {
+                    if(statementScan + 1 < tokenCount && tokens[statementScan + 1] == "else")
+                    {
+                        continue
+                    }
+                    return statementScan + 1
+                }
+            }
+        }
+        else if(tokens[statementScan] == ";" && parentheses == 0 && brackets == 0 && braces == 0)
+        {
+            return statementScan + 1
+        }
+    }
+    return tokenCount
+}
+
+string CParameterName(array<string> tokens, int start, int end)
+{
+    int parameterToken = end - 1
+    while(parameterToken >= start && (tokens[parameterToken] == "*" || tokens[parameterToken] == "&" || tokens[parameterToken] == "[" || tokens[parameterToken] == "]" || tokens[parameterToken] == "const" || tokens[parameterToken] == "volatile"))
+    {
+        parameterToken = parameterToken - 1
+    }
+    if(parameterToken >= start && tokens[parameterToken] != "void")
+    {
+        return tokens[parameterToken]
+    }
+    return ""
+}
+
+int IsBranchContextWithin(int currentGroup, int currentArm, int expectedGroup, int expectedArm, array<int> branchParents, array<int> branchParentArms)
+{
+    if(expectedGroup == 0)
+    {
+        return 1
+    }
+    int group = currentGroup
+    int arm = currentArm
+    while(group > 0)
+    {
+        if(group == expectedGroup)
+        {
+            if(arm == expectedArm)
+            {
+                return 1
+            }
+            return 0
+        }
+        arm = branchParentArms[group - 1]
+        group = branchParents[group - 1]
+    }
+    return 0
+}
+
+int IsCandidateReleased(int candidateIndex, int tokenLimit, array<int> allocationTokens, array<int> releaseCandidates, array<int> releaseTokens, array<int> releaseBranches, array<int> releaseArms, array<int> tokenLoops, array<int> tokenBranches, array<int> tokenArms, array<int> branchIfTokens, array<int> branchElseEnds, array<bool> branchHasElse, array<int> branchParents, array<int> branchParentArms)
+{
+    int allocationToken = allocationTokens[candidateIndex]
+    if(tokenLimit <= allocationToken)
+    {
+        return 0
+    }
+
+    Length(branchIfTokens)
+    int branchCount = Length
+    Length(releaseCandidates)
+    int releaseCount = Length
+    if(releaseCount == 0)
+    {
+        return 0
+    }
+    array<bool> thenCovered = array<bool>{}
+    array<bool> elseCovered = array<bool>{}
+    for(branchIndex, 0, branchCount)
+    {
+        add(thenCovered, false)
+        add(elseCovered, false)
+    }
+
+    for(releaseIndex, 0, releaseCount)
+    {
+        if(releaseCandidates[releaseIndex] == candidateIndex && releaseTokens[releaseIndex] > allocationToken && releaseTokens[releaseIndex] < tokenLimit && tokenLoops[releaseTokens[releaseIndex]] == 0)
+        {
+            int releaseBranch = releaseBranches[releaseIndex]
+            if(releaseBranch == 0)
+            {
+                return 1
+            }
+            if(releaseArms[releaseIndex] == 1)
+            {
+                thenCovered[releaseBranch - 1] = true
+            }
+            else if(releaseArms[releaseIndex] == 2)
+            {
+                elseCovered[releaseBranch - 1] = true
+            }
+        }
+    }
+
+    int reverseIndex = branchCount - 1
+    while(reverseIndex >= 0)
+    {
+        int group = reverseIndex + 1
+        int parent = branchParents[reverseIndex]
+
+        bool allocationInside = false
+        int allocationArm = 0
+        int ancestor = tokenBranches[allocationToken]
+        int ancestorArm = tokenArms[allocationToken]
+        while(ancestor > 0)
+        {
+            if(ancestor == group)
+            {
+                allocationInside = true
+                allocationArm = ancestorArm
+                ancestor = 0
+            }
+            else
+            {
+                ancestorArm = branchParentArms[ancestor - 1]
+                ancestor = branchParents[ancestor - 1]
+            }
+        }
+
+        bool guaranteed = false
+        if(allocationInside)
+        {
+            if(allocationArm == 1 && thenCovered[reverseIndex])
+            {
+                guaranteed = true
+            }
+            else if(allocationArm == 2 && elseCovered[reverseIndex])
+            {
+                guaranteed = true
+            }
+        }
+        else if(allocationToken < branchIfTokens[reverseIndex] && branchHasElse[reverseIndex] && branchElseEnds[reverseIndex] > 0 && branchElseEnds[reverseIndex] <= tokenLimit && thenCovered[reverseIndex] && elseCovered[reverseIndex])
+        {
+            guaranteed = true
+        }
+
+        if(guaranteed)
+        {
+            if(parent > 0)
+            {
+                if(branchParentArms[reverseIndex] == 1)
+                {
+                    thenCovered[parent - 1] = true
+                }
+                else if(branchParentArms[reverseIndex] == 2)
+                {
+                    elseCovered[parent - 1] = true
+                }
+            }
+            else
+            {
+                return 1
+            }
+        }
+        reverseIndex = reverseIndex - 1
+    }
+    return 0
+}
+
+int AnalyzeFile(string path, int lineCount)
+{
+    array<string> tokens = array<string>{}
+    array<int> tokenLines = array<int>{}
+    array<int> tokenScopes = array<int>{}
+    string token = ""
+    int tokenLine = 0
+    int mode = 0
+    bool escaped = false
+
+    for(lineIndex, 0, lineCount)
+    {
+        Input()
+        string sourceLine = Input
+        int lineNumber = lineIndex + 1
+        Length(sourceLine)
+        int sourceLength = Length
+        int column = 0
+        while(column < sourceLength)
+        {
+            Substring(sourceLine, column, 1)
+            string ch = Substring
+
+            if(mode == 1)
+            {
+                if(ch == "*" && column + 1 < sourceLength)
+                {
+                    Substring(sourceLine, column, 2)
+                    string pair = Substring
+                    if(pair == "*/")
+                    {
+                        mode = 0
+                        column = column + 1
+                    }
+                }
+                column = column + 1
+                continue
+            }
+
+            if(mode == 2 || mode == 3)
+            {
+                if(escaped)
+                {
+                    escaped = false
+                }
+                else if(ch == "\\")
+                {
+                    escaped = true
+                }
+                else if((mode == 2 && ch == "\"") || (mode == 3 && ch == "'"))
+                {
+                    mode = 0
+                }
+                column = column + 1
+                continue
+            }
+
+            if(mode == 4)
+            {
+                column = sourceLength
+                continue
+            }
+
+            if(ch == "/" && column + 1 < sourceLength)
+            {
+                Substring(sourceLine, column, 2)
+                string pair = Substring
+                if(pair == "//" || pair == "/*")
+                {
+                    if(token != "")
+                    {
+                        add(tokens, token)
+                        add(tokenLines, tokenLine)
+                        token = ""
+                    }
+                    if(pair == "//")
+                    {
+                        mode = 4
+                    }
+                    else
+                    {
+                        mode = 1
+                    }
+                    column = column + 2
+                    continue
+                }
+            }
+
+            if(ch == "\"" || ch == "'")
+            {
+                if(token != "")
+                {
+                    add(tokens, token)
+                    add(tokenLines, tokenLine)
+                    token = ""
+                }
+                if(ch == "\"")
+                {
+                    mode = 2
+                }
+                else
+                {
+                    mode = 3
+                }
+                escaped = false
+                column = column + 1
+                continue
+            }
+
+            if(ch == " " || ch == "\t" || ch == "\r" || ch == "\n")
+            {
+                if(token != "")
+                {
+                    add(tokens, token)
+                    add(tokenLines, tokenLine)
+                    token = ""
+                }
+                column = column + 1
+                continue
+            }
+
+            if(ch == "(" || ch == ")" || ch == "{" || ch == "}" || ch == "[" || ch == "]" || ch == "," || ch == ";" || ch == "=" || ch == "+" || ch == "-" || ch == "*" || ch == "&" || ch == "|" || ch == "!" || ch == "%" || ch == "<" || ch == ">" || ch == "?" || ch == "~" || ch == "^" || ch == ":" || ch == "." || ch == "#")
+            {
+                if(token != "")
+                {
+                    add(tokens, token)
+                    add(tokenLines, tokenLine)
+                    token = ""
+                }
+                add(tokens, ch)
+                add(tokenLines, lineNumber)
+                column = column + 1
+                continue
+            }
+
+            if(token == "")
+            {
+                tokenLine = lineNumber
+            }
+            token = token + ch
+            column = column + 1
+        }
+
+        if(token != "")
+        {
+            add(tokens, token)
+            add(tokenLines, tokenLine)
+            token = ""
+        }
+        if(mode == 4)
+        {
+            mode = 0
+        }
+    }
+
+    Length(tokens)
+    int tokenCount = Length
+    int scopeDepth = 0
+    int currentScope = 0
+    int nextScope = 0
+    for(scopeIndex, 0, tokenCount)
+    {
+        if(tokens[scopeIndex] == "{")
+        {
+            if(scopeDepth == 0)
+            {
+                nextScope = nextScope + 1
+                currentScope = nextScope
+            }
+            scopeDepth = scopeDepth + 1
+            add(tokenScopes, currentScope)
+        }
+        else if(tokens[scopeIndex] == "}")
+        {
+            add(tokenScopes, currentScope)
+            if(scopeDepth > 0)
+            {
+                scopeDepth = scopeDepth - 1
+                if(scopeDepth == 0)
+                {
+                    currentScope = 0
+                }
+            }
+        }
+        else
+        {
+            add(tokenScopes, currentScope)
+        }
+    }
+
+    array<int> tokenBranchIDs = array<int>{}
+    array<int> tokenBranchArms = array<int>{}
+    array<int> tokenLoopIDs = array<int>{}
+    array<int> branchIfTokens = array<int>{}
+    array<int> branchThenEnds = array<int>{}
+    array<int> branchElseEnds = array<int>{}
+    array<bool> branchHasElse = array<bool>{}
+    array<int> branchParents = array<int>{}
+    array<int> branchParentArms = array<int>{}
+    array<int> branchStackIDs = array<int>{}
+    array<int> branchStackArms = array<int>{}
+    array<int> branchStackThenEnds = array<int>{}
+    array<int> branchStackElseEnds = array<int>{}
+    array<bool> branchStackHasElse = array<bool>{}
+    array<int> loopStackIDs = array<int>{}
+    array<int> loopStackEnds = array<int>{}
+    for(stackInit, 0, tokenCount + 1)
+    {
+        add(branchStackIDs, 0)
+        add(branchStackArms, 0)
+        add(branchStackThenEnds, 0)
+        add(branchStackElseEnds, 0)
+        add(branchStackHasElse, false)
+        add(loopStackIDs, 0)
+        add(loopStackEnds, 0)
+    }
+    int branchStackCount = 0
+    int loopStackCount = 0
+    int nextLoopID = 0
+    for(controlIndex, 0, tokenCount)
+    {
+        bool transitionBranch = true
+        while(branchStackCount > 0 && transitionBranch)
+        {
+            int top = branchStackCount - 1
+            if(branchStackArms[top] == 1 && branchStackHasElse[top] && controlIndex == branchStackThenEnds[top])
+            {
+                branchStackArms[top] = 2
+                branchStackThenEnds[top] = branchStackElseEnds[top]
+                transitionBranch = false
+            }
+            else if(controlIndex >= branchStackThenEnds[top])
+            {
+                branchStackCount = branchStackCount - 1
+            }
+            else
+            {
+                transitionBranch = false
+            }
+        }
+        bool popLoop = true
+        while(loopStackCount > 0 && popLoop)
+        {
+            int loopTop = loopStackCount - 1
+            if(controlIndex >= loopStackEnds[loopTop])
+            {
+                loopStackCount = loopStackCount - 1
+            }
+            else
+            {
+                popLoop = false
+            }
+        }
+
+        int currentBranch = 0
+        int currentArm = 0
+        if(branchStackCount > 0)
+        {
+            currentBranch = branchStackIDs[branchStackCount - 1]
+            currentArm = branchStackArms[branchStackCount - 1]
+        }
+        int currentLoop = 0
+        if(loopStackCount > 0)
+        {
+            currentLoop = loopStackIDs[loopStackCount - 1]
+        }
+        add(tokenBranchIDs, currentBranch)
+        add(tokenBranchArms, currentArm)
+        add(tokenLoopIDs, currentLoop)
+
+        if(tokens[controlIndex] == "if")
+        {
+            int conditionScan = controlIndex + 1
+            int conditionDepth = 0
+            bool conditionEnded = false
+            int bodyStart = tokenCount
+            while(conditionScan < tokenCount && !conditionEnded)
+            {
+                if(tokens[conditionScan] == "(")
+                {
+                    conditionDepth = conditionDepth + 1
+                }
+                else if(tokens[conditionScan] == ")")
+                {
+                    conditionDepth = conditionDepth - 1
+                    if(conditionDepth == 0)
+                    {
+                        bodyStart = conditionScan + 1
+                        conditionEnded = true
+                    }
+                }
+                conditionScan = conditionScan + 1
+            }
+            int thenEnd = tokenCount
+            if(conditionEnded)
+            {
+                CStatementEnd(tokens, bodyStart, tokenCount)
+                thenEnd = CStatementEnd
+            }
+            bool hasElse = thenEnd < tokenCount && tokens[thenEnd] == "else"
+            int elseEnd = 0
+            if(hasElse)
+            {
+                CStatementEnd(tokens, thenEnd + 1, tokenCount)
+                elseEnd = CStatementEnd
+            }
+            Length(branchIfTokens)
+            int branchID = Length + 1
+            add(branchIfTokens, controlIndex)
+            add(branchThenEnds, thenEnd)
+            add(branchElseEnds, elseEnd)
+            add(branchHasElse, hasElse)
+            int parentID = 0
+            int parentArm = 0
+            if(branchStackCount > 0)
+            {
+                parentID = branchStackIDs[branchStackCount - 1]
+                parentArm = branchStackArms[branchStackCount - 1]
+            }
+            add(branchParents, parentID)
+            add(branchParentArms, parentArm)
+            branchStackIDs[branchStackCount] = branchID
+            branchStackArms[branchStackCount] = 1
+            branchStackThenEnds[branchStackCount] = thenEnd
+            branchStackElseEnds[branchStackCount] = elseEnd
+            branchStackHasElse[branchStackCount] = hasElse
+            branchStackCount = branchStackCount + 1
+        }
+
+        if((tokens[controlIndex] == "for" || tokens[controlIndex] == "while") && !(controlIndex > 0 && tokens[controlIndex] == "while" && tokens[controlIndex - 1] == "}"))
+        {
+            int loopConditionScan = controlIndex + 1
+            int loopConditionDepth = 0
+            bool loopConditionEnded = false
+            int loopBodyStart = tokenCount
+            while(loopConditionScan < tokenCount && !loopConditionEnded)
+            {
+                if(tokens[loopConditionScan] == "(")
+                {
+                    loopConditionDepth = loopConditionDepth + 1
+                }
+                else if(tokens[loopConditionScan] == ")")
+                {
+                    loopConditionDepth = loopConditionDepth - 1
+                    if(loopConditionDepth == 0)
+                    {
+                        loopBodyStart = loopConditionScan + 1
+                        loopConditionEnded = true
+                    }
+                }
+                loopConditionScan = loopConditionScan + 1
+            }
+            if(loopConditionEnded)
+            {
+                CStatementEnd(tokens, loopBodyStart, tokenCount)
+                int loopEnd = CStatementEnd
+                nextLoopID = nextLoopID + 1
+                loopStackIDs[loopStackCount] = nextLoopID
+                loopStackEnds[loopStackCount] = loopEnd
+                loopStackCount = loopStackCount + 1
+            }
+        }
+    }
+    array<string> rawReleaseNames = array<string>{}
+    array<int> rawReleaseScopes = array<int>{}
+    array<int> rawReleaseTokens = array<int>{}
+    array<int> rawReleaseBranches = array<int>{}
+    array<int> rawReleaseArms = array<int>{}
+    array<int> rawReleaseLoops = array<int>{}
+    for(rawFreeIndex, 0, tokenCount)
+    {
+        if(tokens[rawFreeIndex] == "free" && rawFreeIndex + 3 < tokenCount && tokens[rawFreeIndex + 1] == "(" && tokens[rawFreeIndex + 3] == ")")
+        {
+            add(rawReleaseNames, tokens[rawFreeIndex + 2])
+            add(rawReleaseScopes, tokenScopes[rawFreeIndex])
+            add(rawReleaseTokens, rawFreeIndex)
+            add(rawReleaseBranches, tokenBranchIDs[rawFreeIndex])
+            add(rawReleaseArms, tokenBranchArms[rawFreeIndex])
+            add(rawReleaseLoops, tokenLoopIDs[rawFreeIndex])
+        }
+    }
+    array<string> releaseFunctionNames = array<string>{}
+    array<int> releaseFunctionParameters = array<int>{}
+    for(functionIndex, 0, tokenCount)
+    {
+        if(tokenScopes[functionIndex] == 0 && functionIndex + 2 < tokenCount && tokens[functionIndex + 1] == "(")
+        {
+            int functionOpenParen = functionIndex + 1
+            int functionScan = functionOpenParen
+            int functionParenDepth = 0
+            int functionCloseParen = tokenCount
+            bool functionParamsEnded = false
+            while(functionScan < tokenCount && !functionParamsEnded)
+            {
+                if(tokens[functionScan] == "(")
+                {
+                    functionParenDepth = functionParenDepth + 1
+                }
+                else if(tokens[functionScan] == ")")
+                {
+                    functionParenDepth = functionParenDepth - 1
+                    if(functionParenDepth == 0)
+                    {
+                        functionCloseParen = functionScan
+                        functionParamsEnded = true
+                    }
+                }
+                functionScan = functionScan + 1
+            }
+            if(functionParamsEnded && functionCloseParen + 1 < tokenCount && tokens[functionCloseParen + 1] == "{")
+            {
+                int functionBodyOpen = functionCloseParen + 1
+                int functionScope = tokenScopes[functionBodyOpen]
+                CStatementEnd(tokens, functionBodyOpen, tokenCount)
+                int functionBodyEnd = CStatementEnd
+                int parameterStart = functionOpenParen + 1
+                int parameterDepth = 0
+                int parameterIndex = 0
+                if(parameterStart < functionCloseParen)
+                {
+                    for(parameterScan, parameterStart, functionCloseParen + 1)
+                    {
+                        if(tokens[parameterScan] == "(" || tokens[parameterScan] == "[")
+                        {
+                            parameterDepth = parameterDepth + 1
+                        }
+                        else if(tokens[parameterScan] == ")" || tokens[parameterScan] == "]")
+                        {
+                            if(parameterDepth > 0)
+                            {
+                                parameterDepth = parameterDepth - 1
+                            }
+                        }
+                        if((tokens[parameterScan] == "," && parameterDepth == 0) || parameterScan == functionCloseParen)
+                        {
+                            CParameterName(tokens, parameterStart, parameterScan)
+                            string parameterName = CParameterName
+                            if(parameterName != "")
+                            {
+                                bool releasesParameter = false
+                                Length(rawReleaseNames)
+                                int rawReleaseCount = Length
+                                for(rawCheck, 0, rawReleaseCount)
+                                {
+                                    if(rawReleaseNames[rawCheck] == parameterName && rawReleaseScopes[rawCheck] == functionScope && rawReleaseTokens[rawCheck] > functionBodyOpen && rawReleaseTokens[rawCheck] < functionBodyEnd && rawReleaseLoops[rawCheck] == 0 && rawReleaseBranches[rawCheck] == 0)
+                                    {
+                                        releasesParameter = true
+                                    }
+                                    else if(rawReleaseNames[rawCheck] == parameterName && rawReleaseScopes[rawCheck] == functionScope && rawReleaseTokens[rawCheck] > functionBodyOpen && rawReleaseTokens[rawCheck] < functionBodyEnd && rawReleaseLoops[rawCheck] == 0 && rawReleaseBranches[rawCheck] > 0)
+                                    {
+                                        int releaseBranch = rawReleaseBranches[rawCheck]
+                                        if(branchParents[releaseBranch - 1] == 0 && branchHasElse[releaseBranch - 1])
+                                        {
+                                            for(oppositeCheck, 0, rawReleaseCount)
+                                            {
+                                                if(rawReleaseNames[oppositeCheck] == parameterName && rawReleaseScopes[oppositeCheck] == functionScope && rawReleaseTokens[oppositeCheck] > functionBodyOpen && rawReleaseTokens[oppositeCheck] < functionBodyEnd && rawReleaseLoops[oppositeCheck] == 0 && rawReleaseBranches[oppositeCheck] == releaseBranch && rawReleaseArms[oppositeCheck] != rawReleaseArms[rawCheck])
+                                                {
+                                                    releasesParameter = true
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if(releasesParameter)
+                                {
+                                    add(releaseFunctionNames, tokens[functionIndex])
+                                    add(releaseFunctionParameters, parameterIndex)
+                                }
+                            }
+                            parameterIndex = parameterIndex + 1
+                            parameterStart = parameterScan + 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    array<string> variables = array<string>{}
+    array<int> allocationLines = array<int>{}
+    array<int> allocationScopes = array<int>{}
+    array<string> allocationKinds = array<string>{}
+    array<int> allocationTokens = array<int>{}
+    array<bool> active = array<bool>{}
+    array<int> releaseCandidates = array<int>{}
+    array<int> releaseTokens = array<int>{}
+    array<int> releaseBranches = array<int>{}
+    array<int> releaseArms = array<int>{}
+    array<string> aliasNames = array<string>{}
+    array<int> aliasCandidates = array<int>{}
+    array<int> aliasScopes = array<int>{}
+    array<int> aliasBranches = array<int>{}
+    array<int> aliasArms = array<int>{}
+    array<bool> aliasActive = array<bool>{}
+    int candidateCount = 0
+    Length(releaseFunctionNames)
+    int releaseFunctionCount = Length
+
+    for(index, 0, tokenCount)
+    {
+        bool allocationAssignment = false
+        if(index + 2 < tokenCount && tokens[index + 1] == "=" && tokens[index + 2] != "=" && tokenScopes[index] > 0)
+        {
+            int scan = index + 2
+            int parentheses = 0
+            int foundAllocator = 0
+            string allocator = ""
+            while(scan < tokenCount && foundAllocator == 0)
+            {
+                string current = tokens[scan]
+                if(current == "(" )
+                {
+                    parentheses = parentheses + 1
+                }
+                else if(current == ")")
+                {
+                    if(parentheses == 0)
+                    {
+                        scan = tokenCount
+                    }
+                    else
+                    {
+                        parentheses = parentheses - 1
+                    }
+                }
+                else if((current == ";" || current == ",") && parentheses == 0)
+                {
+                    scan = tokenCount
+                }
+                IsAllocator(current)
+                int allocatorCheck = IsAllocator
+                if(allocatorCheck == 1 && scan + 1 < tokenCount && tokens[scan + 1] == "(")
+                {
+                    allocator = current
+                    foundAllocator = 1
+                }
+                scan = scan + 1
+            }
+
+            if(foundAllocator == 1)
+            {
+                allocationAssignment = true
+                for(candidateIndex, 0, candidateCount)
+                {
+                    if(active[candidateIndex] && variables[candidateIndex] == tokens[index] && allocationScopes[candidateIndex] == tokenScopes[index])
+                    {
+                        IsCandidateReleased(candidateIndex, index, allocationTokens, releaseCandidates, releaseTokens, releaseBranches, releaseArms, tokenLoopIDs, tokenBranchIDs, tokenBranchArms, branchIfTokens, branchElseEnds, branchHasElse, branchParents, branchParentArms)
+                        int releasedBeforeOverwrite = IsCandidateReleased
+                        if(releasedBeforeOverwrite == 1)
+                        {
+                            active[candidateIndex] = false
+                        }
+                        if(active[candidateIndex] && allocator != "realloc")
+                        {
+                            ToString(allocationLines[candidateIndex])
+                            string oldLine = ToString
+                            string finding = "LEAK|" + path + "|" + oldLine + "|" + variables[candidateIndex] + "|" + allocationKinds[candidateIndex] + "|pointer overwritten before free()"
+                            Print(finding)
+                        }
+                        active[candidateIndex] = false
+                    }
+                }
+                add(variables, tokens[index])
+                add(allocationLines, tokenLines[index])
+                add(allocationScopes, tokenScopes[index])
+                add(allocationKinds, allocator)
+                add(allocationTokens, index)
+                add(active, true)
+                candidateCount = candidateCount + 1
+            }
+        }
+
+        if(index + 2 < tokenCount && tokens[index + 1] == "=" && tokenScopes[index] > 0)
+        {
+            Length(aliasNames)
+            int aliasesBeforeAssignment = Length
+            for(aliasIndex, 0, aliasesBeforeAssignment)
+            {
+                if(aliasActive[aliasIndex] && aliasNames[aliasIndex] == tokens[index] && aliasScopes[aliasIndex] == tokenScopes[index])
+                {
+                    aliasActive[aliasIndex] = false
+                }
+            }
+            if(!allocationAssignment && index + 3 < tokenCount && (tokens[index + 3] == ";" || tokens[index + 3] == ","))
+            {
+                int aliasSourceCandidate = -1
+                string aliasSource = tokens[index + 2]
+                for(sourceIndex, 0, candidateCount)
+                {
+                    if(active[sourceIndex] && variables[sourceIndex] == aliasSource && allocationScopes[sourceIndex] == tokenScopes[index])
+                    {
+                        aliasSourceCandidate = sourceIndex
+                    }
+                }
+                Length(aliasNames)
+                int aliasCount = Length
+                for(sourceAliasIndex, 0, aliasCount)
+                {
+                    if(aliasActive[sourceAliasIndex] && aliasNames[sourceAliasIndex] == aliasSource && aliasScopes[sourceAliasIndex] == tokenScopes[index])
+                    {
+                        IsBranchContextWithin(tokenBranchIDs[index], tokenBranchArms[index], aliasBranches[sourceAliasIndex], aliasArms[sourceAliasIndex], branchParents, branchParentArms)
+                        int aliasContextValid = IsBranchContextWithin
+                        if(aliasContextValid == 1 && active[aliasCandidates[sourceAliasIndex]])
+                        {
+                            aliasSourceCandidate = aliasCandidates[sourceAliasIndex]
+                        }
+                    }
+                }
+                if(aliasSourceCandidate >= 0)
+                {
+                    add(aliasNames, tokens[index])
+                    add(aliasCandidates, aliasSourceCandidate)
+                    add(aliasScopes, tokenScopes[index])
+                    add(aliasBranches, tokenBranchIDs[index])
+                    add(aliasArms, tokenBranchArms[index])
+                    add(aliasActive, true)
+                }
+            }
+        }
+
+        if(tokens[index] == "free" && index + 1 < tokenCount && tokens[index + 1] == "(")
+        {
+            if(index + 3 < tokenCount && tokens[index + 3] == ")")
+            {
+                string freedName = tokens[index + 2]
+                for(candidateIndex, 0, candidateCount)
+                {
+                    if(active[candidateIndex] && allocationScopes[candidateIndex] == tokenScopes[index])
+                    {
+                        bool freeMatches = variables[candidateIndex] == freedName
+                        Length(aliasNames)
+                        int aliasesToCheck = Length
+                        for(aliasCheck, 0, aliasesToCheck)
+                        {
+                            if(aliasActive[aliasCheck] && aliasNames[aliasCheck] == freedName && aliasCandidates[aliasCheck] == candidateIndex && aliasScopes[aliasCheck] == tokenScopes[index])
+                            {
+                                IsBranchContextWithin(tokenBranchIDs[index], tokenBranchArms[index], aliasBranches[aliasCheck], aliasArms[aliasCheck], branchParents, branchParentArms)
+                                int aliasContextValid = IsBranchContextWithin
+                                if(aliasContextValid == 1)
+                                {
+                                    freeMatches = true
+                                }
+                            }
+                        }
+                        if(freeMatches)
+                        {
+                            add(releaseCandidates, candidateIndex)
+                            add(releaseTokens, index)
+                            add(releaseBranches, tokenBranchIDs[index])
+                            add(releaseArms, tokenBranchArms[index])
+                            if(tokenBranchIDs[index] == 0 && tokenLoopIDs[index] == 0)
+                            {
+                                active[candidateIndex] = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if(tokenScopes[index] > 0 && index + 1 < tokenCount && tokens[index + 1] == "(")
+        {
+            for(releaseFunctionIndex, 0, releaseFunctionCount)
+            {
+                if(tokens[index] == releaseFunctionNames[releaseFunctionIndex])
+                {
+                    int callScan = index + 2
+                    int callParentheses = 0
+                    int callBrackets = 0
+                    int callArgumentIndex = 0
+                    int callArgumentStart = callScan
+                    bool callEnded = false
+                    while(callScan < tokenCount && !callEnded)
+                    {
+                        bool argumentEnd = false
+                        if(tokens[callScan] == "(")
+                        {
+                            callParentheses = callParentheses + 1
+                        }
+                        else if(tokens[callScan] == ")")
+                        {
+                            if(callParentheses == 0 && callBrackets == 0)
+                            {
+                                argumentEnd = true
+                                callEnded = true
+                            }
+                            else if(callParentheses > 0)
+                            {
+                                callParentheses = callParentheses - 1
+                            }
+                        }
+                        else if(tokens[callScan] == "[")
+                        {
+                            callBrackets = callBrackets + 1
+                        }
+                        else if(tokens[callScan] == "]")
+                        {
+                            if(callBrackets > 0)
+                            {
+                                callBrackets = callBrackets - 1
+                            }
+                        }
+                        else if(tokens[callScan] == "," && callParentheses == 0 && callBrackets == 0)
+                        {
+                            argumentEnd = true
+                        }
+
+                        if(argumentEnd && callArgumentIndex == releaseFunctionParameters[releaseFunctionIndex] && callArgumentStart + 1 == callScan)
+                        {
+                            string passedPointer = tokens[callArgumentStart]
+                            for(candidateIndex, 0, candidateCount)
+                            {
+                                if(active[candidateIndex] && allocationScopes[candidateIndex] == tokenScopes[index])
+                                {
+                                    bool releaseCallMatches = variables[candidateIndex] == passedPointer
+                                    Length(aliasNames)
+                                    int aliasesAtCall = Length
+                                    for(callAliasIndex, 0, aliasesAtCall)
+                                    {
+                                        if(aliasActive[callAliasIndex] && aliasNames[callAliasIndex] == passedPointer && aliasCandidates[callAliasIndex] == candidateIndex && aliasScopes[callAliasIndex] == tokenScopes[index])
+                                        {
+                                            IsBranchContextWithin(tokenBranchIDs[index], tokenBranchArms[index], aliasBranches[callAliasIndex], aliasArms[callAliasIndex], branchParents, branchParentArms)
+                                            int callAliasContext = IsBranchContextWithin
+                                            if(callAliasContext == 1)
+                                            {
+                                                releaseCallMatches = true
+                                            }
+                                        }
+                                    }
+                                    if(releaseCallMatches)
+                                    {
+                                        add(releaseCandidates, candidateIndex)
+                                        add(releaseTokens, index)
+                                        add(releaseBranches, tokenBranchIDs[index])
+                                        add(releaseArms, tokenBranchArms[index])
+                                        if(tokenBranchIDs[index] == 0 && tokenLoopIDs[index] == 0)
+                                        {
+                                            active[candidateIndex] = false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if(argumentEnd)
+                        {
+                            callArgumentIndex = callArgumentIndex + 1
+                            callArgumentStart = callScan + 1
+                        }
+                        callScan = callScan + 1
+                    }
+                }
+            }
+        }
+
+        if(tokens[index] == "return")
+        {
+            int returnScan = index + 1
+            while(returnScan < tokenCount && tokens[returnScan] != ";")
+            {
+                for(candidateIndex, 0, candidateCount)
+                {
+                    if(active[candidateIndex] && allocationScopes[candidateIndex] == tokenScopes[index])
+                    {
+                        bool returnMatches = variables[candidateIndex] == tokens[returnScan]
+                        Length(aliasNames)
+                        int returnAliasCount = Length
+                        for(returnAliasIndex, 0, returnAliasCount)
+                        {
+                            if(aliasActive[returnAliasIndex] && aliasNames[returnAliasIndex] == tokens[returnScan] && aliasCandidates[returnAliasIndex] == candidateIndex && aliasScopes[returnAliasIndex] == tokenScopes[index])
+                            {
+                                IsBranchContextWithin(tokenBranchIDs[index], tokenBranchArms[index], aliasBranches[returnAliasIndex], aliasArms[returnAliasIndex], branchParents, branchParentArms)
+                                int returnAliasContext = IsBranchContextWithin
+                                if(returnAliasContext == 1)
+                                {
+                                    returnMatches = true
+                                }
+                            }
+                        }
+                        if(returnMatches)
+                        {
+                            add(releaseCandidates, candidateIndex)
+                            add(releaseTokens, index)
+                            add(releaseBranches, tokenBranchIDs[index])
+                            add(releaseArms, tokenBranchArms[index])
+                            if(tokenBranchIDs[index] == 0 && tokenLoopIDs[index] == 0)
+                            {
+                                active[candidateIndex] = false
+                            }
+                        }
+                    }
+                }
+                returnScan = returnScan + 1
+            }
+        }
+    }
+    for(candidateIndex, 0, candidateCount)
+    {
+        if(active[candidateIndex])
+        {
+            IsCandidateReleased(candidateIndex, tokenCount, allocationTokens, releaseCandidates, releaseTokens, releaseBranches, releaseArms, tokenLoopIDs, tokenBranchIDs, tokenBranchArms, branchIfTokens, branchElseEnds, branchHasElse, branchParents, branchParentArms)
+            int releasedAtEnd = IsCandidateReleased
+            if(releasedAtEnd == 1)
+            {
+                active[candidateIndex] = false
+            }
+        }
+        if(active[candidateIndex])
+        {
+            ToString(allocationLines[candidateIndex])
+            string lineText = ToString
+            string finding = "LEAK|" + path + "|" + lineText + "|" + variables[candidateIndex] + "|" + allocationKinds[candidateIndex] + "|no matching free() found in this function"
+            Print(finding)
+        }
+    }
+
+    ToString(candidateCount)
+    string countText = ToString
+    Print("SCAN|" + path + "|" + countText)
+    return 0
+}
